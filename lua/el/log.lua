@@ -13,7 +13,8 @@ return require('plenary.log').new {
 
   -- Any messages above this level will be logged.
   -- Log more stuff for TJ, everyone else can just get warnings :)
-  level = (vim.loop.os_getenv("USER") == 'tj' and 'debug') or 'warn',
+  -- level = (vim.loop.os_getenv("USER") == 'tj' and 'debug') or 'warn',
+  level = 'debug',
 
   -- Level configuration
   modes = {

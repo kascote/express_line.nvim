@@ -32,22 +32,34 @@ local get_new_windows_table = function()
     __index = function(self, win_id)
       local val = setmetatable({}, {
         __index = function(win_table, bufnr)
-          log.debug("Generating statusline for:", win_id, bufnr)
+          local kval = setmetatable({}, {
+            __index = function(buf_table, kind)
+              log.debug("Generating statusline for:", win_id, bufnr, kind)
 
-          if not el.statusline_generator then
-            log.debug("No statusline_generator for now")
-            return function() return '' end
-          end
+              if not el.statusline_generator then
+                log.debug("No statusline_generator for now")
+                return function() return '' end
+              end
 
-          -- Gather up functions to use when evaluating statusline
-          local window = meta.Window:new(win_id)
-          local buffer = meta.Buffer:new(bufnr)
-          local items = vim.tbl_flatten(el.statusline_generator(window, buffer))
+              -- Gather up functions to use when evaluating statusline
+              local window = meta.Window:new(win_id)
+              local buffer = meta.Buffer:new(bufnr)
+              -- local items = vim.tbl_flatten(el.statusline_generator(window, buffer))
 
-          local p = processor.new(items, window, buffer)
+              local items = el.statusline_generator(window, buffer)[kind]
+              if items == nil then
+                log.debug('No statusline for ' .. kind)
+                return function() return '' end
+              end
+              local p = processor.new(vim.tbl_flatten(items), window, buffer)
 
-          rawset(win_table, bufnr, p)
-          return p
+              rawset(buf_table, kind, p)
+              return p
+            end,
+          })
+
+          rawset(win_table, bufnr, kval)
+          return kval
         end,
       })
 
@@ -82,50 +94,59 @@ el.regenerate = function(win_id, bufnr)
   el._window_status_lines[win_id][bufnr] = nil
 end
 
-local default_statusline_generator = function(win_id)
+local default_statusline_generator = function(metaWindow, metaBuffer)
   return {
-    extensions.mode,
-    sections.split,
-    builtin.file,
-    sections.collapse_builtin {
-      ' ',
-      builtin.modified_flag
+    status_line = {
+      extensions.mode,
+      sections.split,
+      builtin.file,
+      sections.collapse_builtin {
+        ' ',
+        builtin.modified_flag
+      },
+      sections.split,
+      lsp_statusline.segment,
+      lsp_statusline.current_function,
+      subscribe.buf_autocmd(
+        "el_git_status",
+        "BufWritePost",
+        function(window, buffer)
+          return extensions.git_changes(window, buffer)
+        end
+      ),
+      -- helper.async_buf_setter(
+      --   win_id,
+      --   'el_git_stat',
+      --   extensions.git_changes,
+      --   5000
+      -- ),
+      '[', builtin.line, ' : ',  builtin.column, ']',
+      sections.collapse_builtin{
+        '[',
+        builtin.help_list,
+        builtin.readonly_list,
+        ']',
+      },
+      builtin.filetype,
     },
-    sections.split,
-    lsp_statusline.segment,
-    lsp_statusline.current_function,
-    subscribe.buf_autocmd(
-      "el_git_status",
-      "BufWritePost",
-      function(window, buffer)
-        return extensions.git_changes(window, buffer)
-      end
-    ),
-    -- helper.async_buf_setter(
-    --   win_id,
-    --   'el_git_stat',
-    --   extensions.git_changes,
-    --   5000
-    -- ),
-    '[', builtin.line, ' : ',  builtin.column, ']',
-    sections.collapse_builtin{
-      '[',
-      builtin.help_list,
-      builtin.readonly_list,
-      ']',
-    },
-    builtin.filetype,
+    status_line_nc = {
+      builtin.file,
+      sections.collapse_builtin {
+        ' ',
+        builtin.modified_flag
+      },
+    }
   }
 end
 
-el.run = function(win_id)
+el.run = function(win_id, kind)
   if not vim.api.nvim_win_is_valid(win_id) then
     return
   end
 
   local bufnr = vim.api.nvim_win_get_buf(win_id)
 
-  return el._window_status_lines[win_id][bufnr]()
+  return el._window_status_lines[win_id][bufnr][kind]()
 end
 
 el.setup = function(opts)
@@ -136,7 +157,7 @@ el.setup = function(opts)
 
   -- TODO: In the future, probably want some easier ways to give users to regenerate their statusline based on some
   -- events. For now, they can write their own autocmds or just call `require('el').regenerate(win_id, bufnr)`
-  local regenerate_autocmds = opts.regenerate_autocmds or {} 
+  local regenerate_autocmds = opts.regenerate_autocmds or {}
 
   el.statusline_generator = generator
   el.reset_windows()
@@ -144,7 +165,9 @@ el.setup = function(opts)
   -- Setup autocmds to make sure
   vim.cmd [=[augroup ExpressLineAutoSetup]=]
   vim.cmd [=[  au!]=]
-  vim.cmd [=[  autocmd BufWinEnter,WinEnter * :lua vim.wo.statusline = string.format([[%%!luaeval('require("el").run(%s)')]], vim.api.nvim_get_current_win()) ]=]
+  vim.cmd [=[  autocmd BufWinEnter,WinEnter * :lua vim.wo.statusline = string.format([[%%!luaeval('require("el").run(%s, "status_line")')]], vim.api.nvim_get_current_win()) ]=]
+  -- TODO: how to know if exists status_line_nc
+  vim.cmd [=[  autocmd BufWinLeave,WinLeave * :lua vim.wo.statusline = string.format([[%%!luaeval('require("el").run(%s, "status_line_nc")')]], vim.api.nvim_get_current_win()) ]=]
 
   for _, event in ipairs(regenerate_autocmds) do
     vim.cmd(string.format(
